@@ -41,6 +41,8 @@ plugins or special drivers inside the apps.
 - Pair and connect over Wi-Fi from inside the app
 - Remembers your last phone, camera and settings
 - One Start/Stop button. Closing the window releases the phone's camera and mic.
+- Minimize to the system tray: it keeps running in the background. Click the tray icon
+  to bring it back, or right-click it for Start/Stop and Quit.
 
 ## Install
 
@@ -95,7 +97,8 @@ Your phone needs Android 12 or newer for the camera (Android 11 for the mic only
 2. Choose the phone and the camera, then press **Start**. The first time after each
    reboot, it asks for your password to create the virtual camera.
 3. In your call app choose camera **Phone Cam** and microphone **PhoneMic**.
-4. Press **Stop**, or close the window, when you're done.
+4. Minimize it if you like. It goes to the system tray and keeps working.
+5. Press **Stop**, or close the window (or tray menu > **Quit**), when you're done.
 
 ## Tips & troubleshooting
 

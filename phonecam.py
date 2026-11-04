@@ -14,12 +14,12 @@ import subprocess
 import sys
 import threading
 
-from PySide6.QtCore import QLocale, QObject, QProcess, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEvent, QLocale, QObject, QProcess, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QVBoxLayout, QWidget,
+    QMenu, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 APP_NAME = "Phone Cam"
@@ -324,6 +324,21 @@ class Window(QWidget):
         self.router = QTimer(self)
         self.router.timeout.connect(lambda: in_thread(route_scrcpy_audio))
 
+        self.tray = None
+        self.tray_hint_shown = False
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = QSystemTrayIcon(self.windowIcon(), self)
+            menu = QMenu(self)
+            self.tray_show = QAction("Show Phone Cam", self, triggered=self.show_window)
+            self.tray_toggle = QAction("Start", self, triggered=self.toggle)
+            menu.addAction(self.tray_show)
+            menu.addAction(self.tray_toggle)
+            menu.addSeparator()
+            menu.addAction(QAction("Quit", self, triggered=self.quit_app))
+            self.tray.setContextMenu(menu)
+            self.tray.activated.connect(self.on_tray_clicked)
+            self.tray.show()
+
         self.resize(460, 0)
         self.update_controls()
         self.refresh_devices()
@@ -331,6 +346,32 @@ class Window(QWidget):
     # ---- status / state
     def set_status(self, text):
         self.status.setText(text)
+        if self.tray:
+            self.tray.setToolTip(f"{APP_NAME}\n{text}")
+
+    # ---- tray
+    def show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def on_tray_clicked(self, reason):
+        if reason == QSystemTrayIcon.Trigger:   # left click toggles the window
+            if self.isVisible() and not self.isMinimized():
+                self.hide()
+            else:
+                self.show_window()
+
+    def changeEvent(self, event):
+        # Minimize button -> hide to the tray (keeps running in the background).
+        if (event.type() == QEvent.WindowStateChange and self.isMinimized()
+                and self.tray and self.tray.isVisible()):
+            QTimer.singleShot(0, self.hide)
+            if not self.tray_hint_shown:
+                self.tray_hint_shown = True
+                self.tray.showMessage(APP_NAME, "Still running in the tray. Click the icon to show it.",
+                                      self.windowIcon(), 3000)
+        super().changeEvent(event)
 
     def running(self):
         return self.proc is not None and self.proc.state() != QProcess.NotRunning
@@ -344,6 +385,11 @@ class Window(QWidget):
         self.start.setText("Stop" if busy else "Start")
         self.start.setIcon(QIcon.fromTheme("media-playback-stop" if busy else "media-playback-start"))
         self.start.setEnabled(busy or bool(self.cams))
+        if self.tray:
+            self.tray_toggle.setText("Stop" if busy else "Start")
+            self.tray_toggle.setEnabled(busy or bool(self.cams))
+            self.tray.setIcon(QIcon.fromTheme("camera-on" if busy else "camera-web",
+                                              self.windowIcon()))
 
     # ---- devices
     def refresh_devices(self):
@@ -556,9 +602,16 @@ class Window(QWidget):
             if not self.proc.waitForFinished(3000):
                 self.proc.kill()
 
-    def closeEvent(self, event):
+    def quit_app(self):
         self.stop()
+        if self.tray:
+            self.tray.hide()
+        QApplication.quit()
+
+    def closeEvent(self, event):
+        # The close button (and tray > Quit) really quits and frees the phone.
         super().closeEvent(event)
+        self.quit_app()
 
 
 def main():
@@ -566,6 +619,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("phonecam-gui")
+    app.setQuitOnLastWindowClosed(False)   # hidden in the tray is not "closed"
     if missing:
         QMessageBox.critical(None, APP_NAME, "Missing programs: " + ", ".join(missing)
                              + "\n\nRun ./install.sh from the Phone Cam folder, or see README.md.")
