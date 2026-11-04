@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Phone Cam
+GenericName=Phone webcam and mic
+Comment=Use your Android phone's camera and microphone as a webcam
+Icon=camera-web
+Exec=phonecam-gui
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=webcam;camera;mic;microphone;scrcpy;android;phone;
