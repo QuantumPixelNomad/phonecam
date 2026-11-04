@@ -2,6 +2,7 @@ Phone Cam for Windows
 =====================
 
 Use your Android phone's camera and microphone as a webcam and mic.
+Requires 64-bit Windows 10 (1903 or newer) or Windows 11.
 
 ONE-TIME SETUP
 1. Install OBS Studio (free): https://obsproject.com

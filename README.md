@@ -49,6 +49,8 @@ plugins or special drivers inside the apps.
 > The Windows version is new and has **not yet been tested on a real Windows PC**.
 > Please [open an issue](https://github.com/QuantumPixelNomad/phonecam/issues) if something doesn't work.
 
+Requires 64-bit Windows 10 (version 1903 or newer) or Windows 11.
+
 Windows has no built-in virtual camera or virtual microphone, so it needs two free drivers.
 You install them once:
 
