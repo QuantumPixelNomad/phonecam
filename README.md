@@ -1,6 +1,6 @@
 # Phone Cam
 
-**Turn your Android phone into a webcam and microphone for Linux.**
+**Turn your Android phone into a webcam and microphone for Linux and Windows.**
 
 Your phone's camera is almost certainly better than your laptop's webcam,
 and its microphones are too. Phone Cam lets you use them in any app
@@ -22,7 +22,7 @@ plugins or special drivers inside the apps.
 
 ```
 +------------------+   USB / Wi-Fi    +-------------------------------------+
-|  Android phone   | ---------------> |  Linux PC                           |
+|  Android phone   | ---------------> |  Linux / Windows PC                 |
 |  camera + mic    |      scrcpy      |   Phone Cam  (virtual webcam)       |
 +------------------+                  |   PhoneMic   (virtual microphone)   |
                                       |      -> Discord, Zoom, Meet, OBS... |
@@ -44,7 +44,28 @@ plugins or special drivers inside the apps.
 - Minimize to the system tray: it keeps running in the background. Click the tray icon
   to bring it back, or right-click it for Start/Stop and Quit.
 
-## Install
+## Install on Windows (preview)
+
+> The Windows version is new and has **not yet been tested on a real Windows PC**.
+> Please [open an issue](https://github.com/QuantumPixelNomad/phonecam/issues) if something doesn't work.
+
+Windows has no built-in virtual camera or virtual microphone, so it needs two free drivers.
+You install them once:
+
+1. **[OBS Studio](https://obsproject.com)** provides the virtual camera. Phone Cam uses
+   its *OBS Virtual Camera* driver. You never need to open OBS.
+2. **[VB-CABLE](https://vb-audio.com/Cable)** (optional, for the mic) provides the
+   virtual microphone. Run its setup as administrator, then restart Windows.
+
+Then download **PhoneCam-Windows-x64.zip** from the
+[latest release](https://github.com/QuantumPixelNomad/phonecam/releases), unzip it, and run
+**PhoneCam.exe**. scrcpy and adb are already included, so there's nothing else to install.
+
+In your call app choose:
+- Camera: **OBS Virtual Camera**
+- Microphone: **CABLE Output (VB-Audio Virtual Cable)**
+
+## Install on Linux
 
 ```bash
 git clone https://github.com/QuantumPixelNomad/phonecam.git
@@ -120,6 +141,12 @@ Your phone needs Android 12 or newer for the camera (Android 11 for the mic only
   (`PhoneMicSink`, a PulseAudio/PipeWire null sink). A remap source called
   *PhoneMic* turns that output into a microphone. Phone Cam keeps scrcpy's sound
   pointed there, so it never comes out of your speakers.
+- **Windows**: there's no v4l2loopback there. Instead, Phone Cam starts the scrcpy server
+  on the phone itself, decodes its H.264 video with [PyAV](https://github.com/PyAV-Org/PyAV),
+  and sends frames to *OBS Virtual Camera* with
+  [pyvirtualcam](https://github.com/letmaik/pyvirtualcam). The phone's raw mic audio is
+  played into *CABLE Input* with [sounddevice](https://github.com/spatialaudio/python-sounddevice),
+  so it comes out of *CABLE Output* as a microphone (see `phonestream.py`).
 
 ## License
 

@@ -1,0 +1,23 @@
+Phone Cam for Windows
+=====================
+
+Use your Android phone's camera and microphone as a webcam and mic.
+
+ONE-TIME SETUP
+1. Install OBS Studio (free): https://obsproject.com
+   Phone Cam uses OBS's virtual camera driver. You don't need to open OBS.
+2. For the microphone (optional), install VB-CABLE (free): https://vb-audio.com/Cable
+   Run its setup as administrator, then restart Windows.
+3. On the phone: Settings > About phone > tap "Build number" 7 times,
+   then Developer options > turn on "USB debugging".
+
+USE
+1. Run PhoneCam.exe.
+2. Connect the phone by USB (accept "Allow USB debugging?" on the phone),
+   or over Wi-Fi with Pair... / Connect.
+3. Pick the camera and press Start.
+4. In Discord, Zoom, Teams, Meet...:
+     Camera:     OBS Virtual Camera
+     Microphone: CABLE Output (VB-Audio Virtual Cable)
+
+Nothing is installed on the phone. scrcpy and adb are included in this folder.

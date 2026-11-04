@@ -1,0 +1,71 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+env:
+  SCRCPY_VERSION: "5.0.1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-windows.txt pyinstaller pillow
+
+      - name: Download scrcpy for Windows (includes adb)
+        shell: pwsh
+        run: |
+          $v = $env:SCRCPY_VERSION
+          $zip = "scrcpy-win64-v$v.zip"
+          Invoke-WebRequest "https://github.com/Genymobile/scrcpy/releases/download/v$v/$zip" -OutFile $zip
+          Invoke-WebRequest "https://github.com/Genymobile/scrcpy/releases/download/v$v/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+          $want = (Select-String -Path SHA256SUMS.txt -Pattern ([regex]::Escape($zip))).Line.Split(' ')[0]
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "scrcpy checksum mismatch" }
+          Expand-Archive $zip -DestinationPath tmp
+          Move-Item "tmp/scrcpy-win64-v$v" scrcpy
+
+      - name: Make icon
+        run: python packaging/make_icon.py packaging/phonecam.ico
+
+      - name: Build PhoneCam.exe
+        run: >
+          pyinstaller --noconfirm --windowed --name PhoneCam
+          --icon packaging/phonecam.ico
+          --add-data "scrcpy;scrcpy"
+          --hidden-import phonestream --hidden-import av --hidden-import pyvirtualcam
+          --hidden-import sounddevice --hidden-import numpy
+          --exclude-module tkinter
+          phonecam.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE dist/PhoneCam/
+          Copy-Item packaging/WINDOWS.txt dist/PhoneCam/README-Windows.txt
+          Compress-Archive dist/PhoneCam/* PhoneCam-Windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhoneCam-Windows-x64
+          path: PhoneCam-Windows-x64.zip
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" PhoneCam-Windows-x64.zip --clobber

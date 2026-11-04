@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Phone Cam - use an Android phone's camera and mic as a Linux webcam/mic.
+"""Phone Cam - use an Android phone's camera and mic as a webcam/mic.
 
 A small Qt front end for scrcpy: pick the phone, pick the camera
-(main, ultra-wide, front, ...), press Start. The camera appears as
-"Phone Cam" and the microphone as "PhoneMic" in any app.
+(main, ultra-wide, front, ...), press Start.
+
+Linux:   camera "Phone Cam" (v4l2loopback), mic "PhoneMic" (PipeWire/Pulse).
+Windows: camera "OBS Virtual Camera" (needs OBS Studio installed),
+         mic "CABLE Output" (needs VB-CABLE installed). See phonestream.py.
 """
 
 import math
@@ -23,11 +26,49 @@ from PySide6.QtWidgets import (
 )
 
 APP_NAME = "Phone Cam"
+WINDOWS = sys.platform == "win32"
 VIDEO_NR = 10
 VIDEO_DEV = f"/dev/video{VIDEO_NR}"
-CAM_LABEL = "Phone Cam"
+CAM_LABEL = "OBS Virtual Camera" if WINDOWS else "Phone Cam"
+MIC_LABEL = "CABLE Output" if WINDOWS else "PhoneMic"
 SINK = "phonemic"
 SOURCE = "phonemic_in"
+
+
+def _bundle_dir():
+    """Folder of the app (or of the unpacked .exe bundle)."""
+    return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+
+
+def _tool(name):
+    """A bundled tool (Windows package ships scrcpy + adb) or one from PATH."""
+    exe = name + (".exe" if WINDOWS else "")
+    local = os.path.join(_bundle_dir(), "scrcpy", exe)
+    return local if os.path.exists(local) else (shutil.which(name) or name)
+
+
+ADB = _tool("adb")
+SCRCPY = _tool("scrcpy")
+os.environ.setdefault("ADB", ADB)      # make scrcpy use the same adb
+
+
+def server_file():
+    """The scrcpy-server that matches the installed scrcpy (Windows path only)."""
+    for path in (os.environ.get("SCRCPY_SERVER_PATH"),
+                 os.path.join(_bundle_dir(), "scrcpy", "scrcpy-server"),
+                 os.path.join(os.path.dirname(os.path.realpath(shutil.which(SCRCPY) or SCRCPY)),
+                              "scrcpy-server"),
+                 "/usr/share/scrcpy/scrcpy-server", "/usr/local/share/scrcpy/scrcpy-server",
+                 "/opt/scrcpy/scrcpy-server"):
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+def scrcpy_version():
+    _, out = run([SCRCPY, "--version"])
+    m = re.search(r"scrcpy (\d+\.\d+(?:\.\d+)?)", out)
+    return m.group(1) if m else None
 
 
 # --------------------------------------------------------------- helpers
@@ -35,7 +76,8 @@ SOURCE = "phonemic_in"
 def run(cmd, timeout=15):
     """Run a command, return (exit code, combined output)."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        extra = {"creationflags": 0x08000000} if WINDOWS else {}   # no console window
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **extra)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except FileNotFoundError:
         return 127, f"{cmd[0]} not found"
@@ -49,7 +91,7 @@ def list_devices():
     The same phone can be listed twice over Wi-Fi (once from pairing,
     once from `adb connect`), so entries are merged by serial number.
     """
-    _, out = run(["adb", "devices", "-l"])
+    _, out = run([ADB, "devices", "-l"])
     phones, others = {}, []
     for line in out.splitlines()[1:]:
         parts = line.split()
@@ -60,7 +102,7 @@ def list_devices():
             others.append({"serial": serial, "state": state,
                            "label": f"{serial} ({state})"})
             continue
-        _, props = run(["adb", "-s", serial, "shell",
+        _, props = run([ADB, "-s", serial, "shell",
                         "getprop ro.serialno; getprop ro.product.marketname; "
                         "getprop ro.product.model; getprop ro.build.version.release"], 10)
         p = (props.splitlines() + ["", "", "", ""])[:4]
@@ -80,7 +122,7 @@ def list_devices():
 
 def focal_info(serial):
     """35 mm-equivalent focal length per camera id, read from dumpsys."""
-    _, out = run(["adb", "-s", serial, "shell", "dumpsys", "media.camera"], 20)
+    _, out = run([ADB, "-s", serial, "shell", "dumpsys", "media.camera"], 20)
     info, cam, want = {}, None, None
     for line in out.splitlines():
         m = re.match(r"^== Camera HAL device (\S+).*static information", line)
@@ -112,7 +154,7 @@ def focal_info(serial):
 
 def list_cameras(serial):
     """Cameras reported by scrcpy, with friendly names."""
-    _, out = run(["scrcpy", "-s", serial, "--list-camera-sizes"], 30)
+    _, out = run([SCRCPY, "-s", serial, "--list-camera-sizes"], 30)
     cams, cur = [], None
     head = re.compile(r"--camera-id=(\S+)\s+\((\w+), (\d+)x(\d+), fps=\{([^}]*)\}"
                       r"(?:, zoom-range=\[([\d.]+), ([\d.]+)\])?")
@@ -227,10 +269,36 @@ def virtual_camera_ready():
 
 # --------------------------------------------------------------- GUI
 
+def app_icon(active=False):
+    """Theme icon on Linux; a drawn camera icon where there is no icon theme (Windows)."""
+    themed = QIcon.fromTheme("camera-on" if active else "camera-web")
+    if not themed.isNull():
+        return themed
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    pm = QPixmap(256, 256)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.scale(4, 4)                       # drawn on a 64x64 grid, rendered at 256 px
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#2d7be5" if not active else "#2fa84f"))
+    p.drawRoundedRect(4, 14, 56, 40, 10, 10)
+    p.setBrush(QColor("white"))
+    p.drawEllipse(18, 20, 28, 28)
+    p.setBrush(QColor("#1b3a66"))
+    p.drawEllipse(25, 27, 14, 14)
+    p.setBrush(QColor("white"))
+    p.drawRoundedRect(22, 8, 20, 10, 3, 3)
+    p.end()
+    return QIcon(pm)
+
+
 class Bridge(QObject):
     devices = Signal(list)
     cameras = Signal(str, object)   # serial, list or Exception
     message = Signal(str)
+    started = Signal(int, int)
+    stopped = Signal(object)
 
 
 def in_thread(fn):
@@ -241,12 +309,15 @@ class Window(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(QIcon.fromTheme("camera-web"))
+        self.setWindowIcon(app_icon())
         self.settings = QSettings("phonecam", "phonecam")
         self.bridge = Bridge()
         self.bridge.devices.connect(self.on_devices)
         self.bridge.cameras.connect(self.on_cameras)
         self.bridge.message.connect(self.set_status)
+        self.bridge.started.connect(self.on_stream_started)
+        self.bridge.stopped.connect(self.on_stream_stopped)
+        self.stream = None
         self.proc = None
         self.cams = []
 
@@ -290,7 +361,7 @@ class Window(QWidget):
         self.zoom.setSingleStep(0.5)
         self.zoom.setSuffix("x")
 
-        self.mic = QCheckBox("Use the phone's microphone (PhoneMic)")
+        self.mic = QCheckBox(f"Use the phone's microphone ({MIC_LABEL})")
         self.mic.setChecked(self.settings.value("mic", "true") == "true")
 
         form = QFormLayout()
@@ -311,7 +382,7 @@ class Window(QWidget):
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        hint = QLabel(f'In Discord, Zoom, Meet...: camera <b>{CAM_LABEL}</b>, microphone <b>PhoneMic</b>.')
+        hint = QLabel(f'In Discord, Zoom, Meet...: camera <b>{CAM_LABEL}</b>, microphone <b>{MIC_LABEL}</b>.')
         hint.setWordWrap(True)
         hint.setStyleSheet("color: palette(placeholder-text);")
 
@@ -374,6 +445,8 @@ class Window(QWidget):
         super().changeEvent(event)
 
     def running(self):
+        if self.stream is not None:
+            return True
         return self.proc is not None and self.proc.state() != QProcess.NotRunning
 
     def update_controls(self):
@@ -388,8 +461,7 @@ class Window(QWidget):
         if self.tray:
             self.tray_toggle.setText("Stop" if busy else "Start")
             self.tray_toggle.setEnabled(busy or bool(self.cams))
-            self.tray.setIcon(QIcon.fromTheme("camera-on" if busy else "camera-web",
-                                              self.windowIcon()))
+            self.tray.setIcon(app_icon(busy))
 
     # ---- devices
     def refresh_devices(self):
@@ -484,7 +556,7 @@ class Window(QWidget):
         self.set_status(f"Connecting to {addr}...")
 
         def work():
-            _, out = run(["adb", "connect", addr], 15)
+            _, out = run([ADB, "connect", addr], 15)
             self.bridge.message.emit(out.strip())
             self.bridge.devices.emit(list_devices())
         in_thread(work)
@@ -502,7 +574,7 @@ class Window(QWidget):
         self.set_status("Pairing...")
 
         def work():
-            _, out = run(["adb", "pair", host.strip(), code.strip()], 30)
+            _, out = run([ADB, "pair", host.strip(), code.strip()], 30)
             self.bridge.message.emit(out.strip() +
                                      "\nNow enter the IP:port from the main Wireless debugging screen and press Connect.")
         in_thread(work)
@@ -519,6 +591,8 @@ class Window(QWidget):
         cam = self.camera.currentData()
         if not d or cam is None:
             return
+        if WINDOWS or os.environ.get("PHONECAM_DIRECT") == "1":   # the env var: test the Windows path on Linux
+            return self.begin_direct(d, cam)
         if not virtual_camera_ready():
             self.set_status("Creating the virtual camera (asks for your password)...")
             QApplication.processEvents()
@@ -549,23 +623,72 @@ class Window(QWidget):
             args.append(f"--camera-zoom={self.zoom.value():g}")
         args += ["--audio-source=mic"] if self.mic.isChecked() else ["--no-audio"]
 
-        for k, v in (("device", d["key"]), (f"camera/{d['key']}", cam),
-                     ("quality", self.quality.currentText()),
-                     ("fps", self.fps.currentData() or 30),
-                     ("rotate", self.rotate.currentText()),
-                     ("mic", "true" if self.mic.isChecked() else "false")):
-            self.settings.setValue(k, v)
+        self.save_settings(d, cam)
 
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.MergedChannels)
         self.proc.readyReadStandardOutput.connect(self.on_output)
         self.proc.finished.connect(self.on_finished)
         self.log = []
-        self.proc.start("scrcpy", args)
+        self.proc.start(SCRCPY, args)
         self.set_status("Starting...")
         if self.mic.isChecked():
             self.router.start(1000)
         self.update_controls()
+
+    # ---- Windows: stream directly to OBS Virtual Camera / VB-CABLE
+    def begin_direct(self, d, cam):
+        import phonestream
+        server, version = server_file(), scrcpy_version()
+        if not server or not version:
+            self.set_status("scrcpy files are missing from the Phone Cam folder. Please re-download Phone Cam.")
+            return
+        mic = self.mic.isChecked()
+        audio_dev = None
+        if mic:
+            audio_dev = phonestream.find_audio_device("CABLE Input")
+            if audio_dev is None:
+                mic = False
+                QMessageBox.information(
+                    self, APP_NAME,
+                    "To use the phone's microphone, install the free VB-CABLE driver "
+                    "(vb-audio.com/Cable) and restart Phone Cam.\n\nStarting with the camera only.")
+        height = int(self.quality.currentText().rstrip("p"))
+        info = next((c for c in self.cams if c["id"] == cam), {})
+        size = pick_size(info.get("sizes", []), height)
+        self.size_text = f"{size[0]}x{size[1]}" if size else ""
+        self.direct_mic = mic
+        self.save_settings(d, cam)
+        b = self.bridge
+        self.stream = phonestream.PhoneStream(
+            ADB, server, version, d["serial"], cam, size=size,
+            fps=self.fps.currentData() or 30,
+            rotate=int(self.rotate.currentText().rstrip("°")),
+            zoom=self.zoom.value(), mic=mic, audio_device=audio_dev,
+            on_status=b.message.emit, on_started=b.started.emit, on_stopped=b.stopped.emit)
+        self.stream.start()
+        self.set_status("Starting...")
+        self.update_controls()
+
+    def on_stream_started(self, w, h):
+        self.set_status(f"Running at {w}x{h}. Pick \"{CAM_LABEL}\""
+                        + (f" and \"{MIC_LABEL}\"" if self.direct_mic else "") + " in your app.")
+
+    def on_stream_stopped(self, error):
+        self.stream = None
+        if error and ("OBS" in error or "virtual camera" in error.lower() or "backend" in error.lower()):
+            error = ("OBS Virtual Camera was not found. Install OBS Studio (obsproject.com), "
+                     "then press Start again. You don't need to open OBS.")
+        self.set_status(f"Stopped: {error}" if error else "Stopped.")
+        self.update_controls()
+
+    def save_settings(self, d, cam):
+        for k, v in (("device", d["key"]), (f"camera/{d['key']}", cam),
+                     ("quality", self.quality.currentText()),
+                     ("fps", self.fps.currentData() or 30),
+                     ("rotate", self.rotate.currentText()),
+                     ("mic", "true" if self.mic.isChecked() else "false")):
+            self.settings.setValue(k, v)
 
     def on_output(self):
         text = bytes(self.proc.readAllStandardOutput()).decode(errors="replace")
@@ -577,7 +700,7 @@ class Window(QWidget):
             if "v4l2 sink started" in line:
                 self.set_status((f"Running at {self.size_text}. " if self.size_text else "Running. ")
                                 + f"Pick \"{CAM_LABEL}\""
-                                + (" and \"PhoneMic\"" if self.mic.isChecked() else "")
+                                + (f" and \"{MIC_LABEL}\"" if self.mic.isChecked() else "")
                                 + " in your app.")
             elif "ERROR" in line:
                 self.set_status(line)
@@ -597,6 +720,11 @@ class Window(QWidget):
         self.update_controls()
 
     def stop(self):
+        if self.stream is not None:
+            self.set_status("Stopping...")
+            QApplication.processEvents()
+            self.stream.stop()
+            return
         if self.running():
             self.proc.terminate()
             if not self.proc.waitForFinished(3000):
@@ -615,14 +743,16 @@ class Window(QWidget):
 
 
 def main():
-    missing = [t for t in ("adb", "scrcpy", "pactl") if not shutil.which(t)]
+    tools = (ADB, SCRCPY) if WINDOWS else (ADB, SCRCPY, "pactl")
+    missing = [os.path.basename(t) for t in tools if not (os.path.exists(t) or shutil.which(t))]
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setDesktopFileName("phonecam-gui")
     app.setQuitOnLastWindowClosed(False)   # hidden in the tray is not "closed"
     if missing:
         QMessageBox.critical(None, APP_NAME, "Missing programs: " + ", ".join(missing)
-                             + "\n\nRun ./install.sh from the Phone Cam folder, or see README.md.")
+                             + ("\n\nPlease re-download Phone Cam." if WINDOWS else
+                                "\n\nRun ./install.sh from the Phone Cam folder, or see README.md."))
         return 1
     w = Window()
     w.show()
