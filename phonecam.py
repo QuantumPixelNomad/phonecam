@@ -14,7 +14,7 @@ import subprocess
 import sys
 import threading
 
-from PySide6.QtCore import QObject, QProcess, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QLocale, QObject, QProcess, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
@@ -112,14 +112,24 @@ def focal_info(serial):
 
 def list_cameras(serial):
     """Cameras reported by scrcpy, with friendly names."""
-    _, out = run(["scrcpy", "-s", serial, "--list-cameras"], 30)
-    cams = []
-    for m in re.finditer(r"--camera-id=(\S+)\s+\((\w+), (\d+)x(\d+), fps=\{([^}]*)\}"
-                         r"(?:, zoom-range=\[([\d.]+), ([\d.]+)\])?", out):
-        cid, facing, w, h, fps, zmin, zmax = m.groups()
-        cams.append({"id": cid, "facing": facing, "w": int(w), "h": int(h),
-                     "fps": [int(x) for x in re.findall(r"\d+", fps)],
-                     "zoom": float(zmax) if zmax else 1.0})
+    _, out = run(["scrcpy", "-s", serial, "--list-camera-sizes"], 30)
+    cams, cur = [], None
+    head = re.compile(r"--camera-id=(\S+)\s+\((\w+), (\d+)x(\d+), fps=\{([^}]*)\}"
+                      r"(?:, zoom-range=\[([\d.]+), ([\d.]+)\])?")
+    for line in out.splitlines():
+        m = head.search(line)
+        if m:
+            cid, facing, w, h, fps, zmin, zmax = m.groups()
+            cur = {"id": cid, "facing": facing, "w": int(w), "h": int(h),
+                   "fps": [int(x) for x in re.findall(r"\d+", fps)],
+                   "zoom": float(zmax) if zmax else 1.0, "sizes": []}
+            cams.append(cur)
+        elif "High speed" in line:
+            cur = None          # high-speed sizes need special mode; skip them
+        elif cur is not None:
+            sm = re.match(r"^\s*-\s*(\d+)x(\d+)\s*$", line)
+            if sm:
+                cur["sizes"].append((int(sm.group(1)), int(sm.group(2))))
     if not cams:
         err = next((l for l in out.splitlines() if "ERROR" in l), out.strip()[-200:])
         raise RuntimeError(err or "No cameras found")
@@ -156,6 +166,25 @@ def list_cameras(serial):
     order = {"Main": 0, "Ultra-wide": 1, "Telephoto": 2, "Front": 3}
     cams.sort(key=lambda c: (order.get(c["label"].split(" ")[0], 4), int(c["id"]) if c["id"].isdigit() else 99))
     return cams
+
+
+def pick_size(sizes, height):
+    """Best real camera size for a target height (480/720/1080).
+
+    Prefers that exact height, closest to 16:9; otherwise the biggest
+    size below it. Phones don't always offer an exact 16:9 size.
+    """
+    if not sizes:
+        return None
+    ar = lambda s: abs(s[0] / s[1] - 16 / 9)
+    exact = [s for s in sizes if s[1] == height]
+    if exact:
+        return min(exact, key=ar)
+    below = [s for s in sizes if s[1] < height]
+    if below:
+        top = max(s[1] for s in below)
+        return min((s for s in below if s[1] == top), key=ar)
+    return min(sizes, key=lambda s: s[0] * s[1])
 
 
 def ensure_virtual_mic():
@@ -256,6 +285,7 @@ class Window(QWidget):
         self.fps = QComboBox()
 
         self.zoom = QDoubleSpinBox()
+        self.zoom.setLocale(QLocale.c())   # always show 1.0x, not localized digits
         self.zoom.setRange(1.0, 1.0)
         self.zoom.setSingleStep(0.5)
         self.zoom.setSuffix("x")
@@ -455,11 +485,18 @@ class Window(QWidget):
         if self.mic.isChecked():
             ensure_virtual_mic()
 
-        size = {"480p": 854, "720p": 1280, "1080p": 1920}[self.quality.currentText()]
+        height = int(self.quality.currentText().rstrip("p"))
+        info = next((c for c in self.cams if c["id"] == cam), {})
+        size = pick_size(info.get("sizes", []), height)
         rot = self.rotate.currentText().rstrip("°")
         args = ["-s", d["serial"], "--video-source=camera", f"--camera-id={cam}",
-                "--camera-ar=16:9", f"--max-size={size}", f"--camera-fps={self.fps.currentData() or 30}",
+                f"--camera-fps={self.fps.currentData() or 30}",
                 f"--v4l2-sink={VIDEO_DEV}", "--no-window"]
+        if size:
+            args.append(f"--camera-size={size[0]}x{size[1]}")
+        else:  # size list unknown: let scrcpy choose
+            args += ["--camera-ar=16:9", f"--max-size={height * 16 // 9}"]
+        self.size_text = f"{size[0]}x{size[1]}" if size else ""
         if rot != "0":
             args.append(f"--capture-orientation={rot}")
         if self.zoom.value() > 1.0:
@@ -492,7 +529,8 @@ class Window(QWidget):
                 continue
             self.log.append(line)
             if "v4l2 sink started" in line:
-                self.set_status(f"Running. Pick \"{CAM_LABEL}\""
+                self.set_status((f"Running at {self.size_text}. " if self.size_text else "Running. ")
+                                + f"Pick \"{CAM_LABEL}\""
                                 + (" and \"PhoneMic\"" if self.mic.isChecked() else "")
                                 + " in your app.")
             elif "ERROR" in line:
@@ -500,9 +538,13 @@ class Window(QWidget):
 
     def on_finished(self, code, _status):
         self.router.stop()
-        err = [l for l in getattr(self, "log", []) if "ERROR" in l]
-        if code not in (0, 2) and err:
-            self.set_status("Stopped: " + " ".join(err[-2:]))
+        log = getattr(self, "log", [])
+        # The first real error explains the failure; later ones are side effects.
+        cause = next((l.split(":", 1)[1].strip() for l in log
+                      if re.match(r"^[\w.$]+(Exception|Error):", l)), None)
+        err = [l for l in log if "ERROR" in l]
+        if code not in (0, 2) and (cause or err):
+            self.set_status("Stopped: " + (cause or err[0]))
         else:
             self.set_status("Stopped.")
         self.proc = None
