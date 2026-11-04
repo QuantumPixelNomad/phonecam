@@ -697,7 +697,9 @@ class Window(QWidget):
             if not line:
                 continue
             self.log.append(line)
-            if "v4l2 sink started" in line:
+            # scrcpy's own log is buffered when not in a terminal, but the phone
+            # server's lines arrive at once: "Using camera" means it's streaming.
+            if "v4l2 sink started" in line or "Using camera" in line:
                 self.set_status((f"Running at {self.size_text}. " if self.size_text else "Running. ")
                                 + f"Pick \"{CAM_LABEL}\""
                                 + (f" and \"{MIC_LABEL}\"" if self.mic.isChecked() else "")
